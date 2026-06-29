@@ -41,10 +41,10 @@ enum AnthropicEndpointResolver {
             throw AynaError.invalidEndpoint(trimmed)
         }
 
-        // Allow localhost for development testing
-        let isLocalhost = url.host?.lowercased() == "localhost" || url.host == "127.0.0.1"
+        // Allow loopback HTTP for local development/testing only.
+        let isLoopbackHTTP = scheme == "http" && Self.isLoopbackHost(url.host)
 
-        if scheme == "http", !isLocalhost {
+        if scheme == "http", !isLoopbackHTTP {
             throw AynaError.invalidEndpoint("HTTP endpoints are not allowed (use HTTPS): \(trimmed)")
         }
 
@@ -63,6 +63,11 @@ enum AnthropicEndpointResolver {
     }
 
     // MARK: - Private Helpers
+
+    private static func isLoopbackHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
 
     /// Sanitizes a base endpoint by trimming whitespace and trailing slashes.
     private static func sanitizedBaseEndpoint(_ endpoint: String) -> String {

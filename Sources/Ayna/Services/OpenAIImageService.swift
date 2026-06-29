@@ -76,8 +76,9 @@ final class OpenAIImageService: @unchecked Sendable {
             return
         }
 
-        // Validate API key
-        guard !requestConfig.apiKey.isEmpty else {
+        // Validate API key only for OpenAI-hosted and Azure endpoints. Custom OpenAI-compatible
+        // image proxies may intentionally rely on local/network authentication instead.
+        guard !requestConfig.requiresAPIKey || !requestConfig.apiKey.isEmpty else {
             onError(AynaError.missingAPIKey(provider: "OpenAI"))
             return
         }
@@ -89,7 +90,13 @@ final class OpenAIImageService: @unchecked Sendable {
             customEndpoint: requestConfig.customEndpoint,
             azureAPIVersion: requestConfig.azureAPIVersion
         )
-        let imageURL = OpenAIEndpointResolver.imageGenerationURL(for: endpointConfig)
+        let imageURL: String
+        do {
+            imageURL = try OpenAIEndpointResolver.imageGenerationURL(for: endpointConfig)
+        } catch {
+            onError(error)
+            return
+        }
 
         guard let url = URL(string: imageURL) else {
             onError(AynaError.invalidEndpoint(imageURL))
@@ -102,10 +109,10 @@ final class OpenAIImageService: @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Set authentication header
+        // Set authentication header when required/configured.
         if usesAzureEndpoint {
             request.setValue(requestConfig.apiKey, forHTTPHeaderField: "api-key")
-        } else {
+        } else if !requestConfig.apiKey.isEmpty {
             request.setValue("Bearer \(requestConfig.apiKey)", forHTTPHeaderField: "Authorization")
         }
 
@@ -374,8 +381,9 @@ final class OpenAIImageService: @unchecked Sendable {
             return
         }
 
-        // Validate API key
-        guard !requestConfig.apiKey.isEmpty else {
+        // Validate API key only for OpenAI-hosted and Azure endpoints. Custom OpenAI-compatible
+        // image proxies may intentionally rely on local/network authentication instead.
+        guard !requestConfig.requiresAPIKey || !requestConfig.apiKey.isEmpty else {
             onError(AynaError.missingAPIKey(provider: "OpenAI"))
             return
         }
@@ -387,7 +395,13 @@ final class OpenAIImageService: @unchecked Sendable {
             customEndpoint: requestConfig.customEndpoint,
             azureAPIVersion: requestConfig.azureAPIVersion
         )
-        let editURL = OpenAIEndpointResolver.imageEditURL(for: endpointConfig)
+        let editURL: String
+        do {
+            editURL = try OpenAIEndpointResolver.imageEditURL(for: endpointConfig)
+        } catch {
+            onError(error)
+            return
+        }
 
         guard let url = URL(string: editURL) else {
             onError(AynaError.invalidEndpoint(editURL))
@@ -400,11 +414,11 @@ final class OpenAIImageService: @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
-        // Set authentication header
+        // Set authentication header when required/configured.
         let usesAzureEndpoint = OpenAIEndpointResolver.isAzureEndpoint(requestConfig.customEndpoint)
         if usesAzureEndpoint {
             request.setValue(requestConfig.apiKey, forHTTPHeaderField: "api-key")
-        } else {
+        } else if !requestConfig.apiKey.isEmpty {
             request.setValue("Bearer \(requestConfig.apiKey)", forHTTPHeaderField: "Authorization")
         }
 
@@ -534,5 +548,11 @@ final class OpenAIImageService: @unchecked Sendable {
 
             self?.parseResponse(data, onComplete: onComplete, onError: onError)
         }.resume()
+    }
+}
+
+private extension OpenAIImageService.RequestConfig {
+    var requiresAPIKey: Bool {
+        OpenAIEndpointResolver.customEndpointRequiresAPIKey(customEndpoint)
     }
 }

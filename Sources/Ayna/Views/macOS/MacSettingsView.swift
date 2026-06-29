@@ -2277,12 +2277,12 @@ struct AnthropicConfigurationView: View {
                             .background(Color.secondary.opacity(0.1))
                             .clipShape(.rect(cornerRadius: Spacing.CornerRadius.xs))
                     }
-                    TextField("https://api.anthropic.com", text: $tempEndpoint)
+                    TextField("https://api.anthropic.com or http://localhost:8000", text: $tempEndpoint)
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: tempEndpoint) { _, _ in
                             validationStatus = .notChecked
                         }
-                    Text("Leave empty for the default Anthropic API. Enter a custom URL for proxies or Azure.")
+                    Text("Leave empty for the default Anthropic API. Enter a custom HTTPS URL for proxies or Azure; HTTP is only allowed for localhost development.")
                         .font(Typography.caption)
                         .foregroundStyle(.tertiary)
                 }
