@@ -1,16 +1,18 @@
 name: Build Unsigned iOS IPA
+run-name: Ayna unsigned iOS build - ${{ github.event_name }} - ${{ github.sha }}
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-unsigned-ios-ipa.yml
+      - scripts/build-unsigned-ios-ipa.sh
+      - AynaMobile.xcodeproj/**
+      - Sources/**
+      - Package.swift
+      - Package.resolved
   workflow_dispatch:
-    inputs:
-      configuration:
-        description: Xcode build configuration
-        required: true
-        default: Release
-        type: choice
-        options:
-          - Release
-          - Debug
 
 permissions:
   contents: read
@@ -20,98 +22,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-unsigned-ipa:
-    name: Build unsigned Ayna IPA
-    runs-on: macos-26
-    timeout-minutes: 60
-
-    env:
-      CONFIGURATION: ${{ inputs.configuration }}
-      OUTPUT_ROOT: ${{ github.workspace }}/build-artifacts
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Select and record Xcode 26
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p workflow-diagnostics
-
-          {
-            echo "=== Runner ==="
-            echo "name=$RUNNER_NAME"
-            echo "os=$RUNNER_OS"
-            echo "arch=$RUNNER_ARCH"
-            sw_vers
-            uname -a
-            echo
-            echo "=== Initially selected Xcode ==="
-            xcode-select -p
-            xcodebuild -version
-
-            if ! xcodebuild -version | head -n 1 | grep -Eq '^Xcode 26([.]|$)'; then
-              shopt -s nullglob
-              candidates=(/Applications/Xcode_26*.app)
-              if (( ${#candidates[@]} == 0 )); then
-                echo "No Xcode 26 installation was found in /Applications." >&2
-                exit 1
-              fi
-
-              selected_index=$(( ${#candidates[@]} - 1 ))
-              selected_xcode="${candidates[$selected_index]}"
-              echo "Selecting $selected_xcode"
-              sudo xcode-select -s "$selected_xcode/Contents/Developer"
-            fi
-
-            echo
-            echo "=== Final Xcode selection ==="
-            xcode-select -p
-            xcodebuild -version
-            xcodebuild -showsdks
-          } 2>&1 | tee workflow-diagnostics/runner-setup.txt
-
-      - name: Build and package unsigned IPA
-        shell: bash
-        run: bash scripts/build-unsigned-ios-ipa.sh
-
-      - name: Upload unsigned IPA
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ayna-unsigned-ipa-${{ github.run_number }}
-          path: |
-            build-artifacts/ipa/Ayna-unsigned.ipa
-            build-artifacts/ipa/SHA256SUMS.txt
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-      - name: Upload build diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ayna-build-diagnostics-${{ github.run_number }}
-          path: |
-            workflow-diagnostics
-            build-artifacts/diagnostics
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 6
-
-      - name: Write workflow summary
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "## Ayna unsigned iOS build"
-            echo
-            echo "- Result: **${{ job.status }}**"
-            echo "- Configuration: \`${CONFIGURATION}\`"
-            echo "- Runner: \`macos-26\`"
-            echo "- IPA artifact on success: \`Ayna-unsigned-ipa-${{ github.run_number }}\`"
-            echo "- Diagnostics artifact: \`Ayna-build-diagnostics-${{ github.run_number }}\`"
-            echo
-            echo "The diagnostics artifact is uploaded even when compilation fails."
-          } >> "$GITHUB_STEP_SUMMARY"
+  validate:
+    name: Validate workflow inputs
+    runs-on: ubuntu-l
