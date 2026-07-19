@@ -1,72 +1,447 @@
 name: Build Unsigned iOS IPA
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/build-unsigned-ios-ipa.yml'
-      - 'scripts/build-unsigned-ios-ipa.sh'
-      - 'AynaMobile.xcodeproj/**'
-      - 'Sources/**'
-      - 'Package.swift'
-      - 'Package.resolved'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ayna-ios-${{ github.ref }}
+  group: ayna-unsigned-ios-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
+    name: Build Ayna unsigned IPA
     runs-on: macos-26
     timeout-minutes: 60
-    env:
-      CONFIGURATION: Release
-      OUTPUT_ROOT: ${{ github.workspace }}/build-artifacts
-    steps:
-      - name: Create diagnostics directory
-        run: mkdir -p workflow-diagnostics
 
-      - name: Checkout
+    env:
+      PROJECT: AynaMobile.xcodeproj
+      SCHEME: Ayna-iOS
+      CONFIGURATION: Release
+      DERIVED_DATA: ${{ github.workspace }}/build/DerivedData
+      LOG_DIR: ${{ github.workspace }}/build/logs
+      OUTPUT_DIR: ${{ github.workspace }}/build/output
+      RESULT_BUNDLE: ${{ github.workspace }}/build/logs/AynaBuild.xcresult
+
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Record runner environment
+      - name: Create build directories
         shell: bash
         run: |
+          set -Eeuo pipefail
+
+          rm -rf "$GITHUB_WORKSPACE/build"
+
+          mkdir -p "$DERIVED_DATA"
+          mkdir -p "$LOG_DIR"
+          mkdir -p "$OUTPUT_DIR"
+
+      - name: Record runner environment
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
           {
+            echo "=== Date ==="
             date -u
-            uname -a
+
+            echo
+            echo "=== Runner ==="
+            echo "RUNNER_NAME=${RUNNER_NAME:-}"
+            echo "RUNNER_OS=${RUNNER_OS:-}"
+            echo "RUNNER_ARCH=${RUNNER_ARCH:-}"
+
+            echo
+            echo "=== macOS ==="
             sw_vers
+            uname -a
+
+            echo
+            echo "=== Selected developer directory ==="
+            xcode-select -p
+
+            echo
+            echo "=== Xcode ==="
+            xcodebuild -version
+
+            echo
+            echo "=== Swift ==="
+            swift --version
+
+            echo
+            echo "=== Available SDKs ==="
+            xcodebuild -showsdks
+
+            echo
+            echo "=== Installed Xcode applications ==="
+            ls -la /Applications | grep -i Xcode || true
+
+            echo
+            echo "=== Git revision ==="
+            git rev-parse HEAD || true
+            git status --short || true
+
+            echo
+            echo "=== Disk space ==="
+            df -h
+          } 2>&1 | tee "$LOG_DIR/environment.log"
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          {
+            CURRENT_VERSION="$(xcodebuild -version | head -n 1)"
+
+            echo "Initially selected: $CURRENT_VERSION"
+
+            if [[ "$CURRENT_VERSION" != Xcode\ 26* ]]; then
+              XCODE_PATH="$(
+                find /Applications \
+                  -maxdepth 1 \
+                  -type d \
+                  -name 'Xcode_26*.app' \
+                  -print 2>/dev/null |
+                sort -V |
+                tail -n 1
+              )"
+
+              if [[ -z "$XCODE_PATH" ]]; then
+                echo "ERROR: Xcode 26 was not found in /Applications."
+                exit 1
+              fi
+
+              echo "Selecting: $XCODE_PATH"
+              sudo xcode-select --switch "$XCODE_PATH/Contents/Developer"
+            fi
+
+            echo
+            echo "Final Xcode selection:"
             xcode-select -p
             xcodebuild -version
-            xcodebuild -showsdks
-            swift --version
-          } 2>&1 | tee workflow-diagnostics/runner-environment.txt
 
-      - name: Build unsigned IPA
+            if ! xcodebuild -version | head -n 1 | grep -q '^Xcode 26'; then
+              echo "ERROR: The selected Xcode version is not Xcode 26."
+              exit 1
+            fi
+
+            if ! xcodebuild -showsdks | grep -q 'iphoneos26'; then
+              echo "ERROR: The selected Xcode does not contain an iOS 26 SDK."
+              xcodebuild -showsdks
+              exit 1
+            fi
+          } 2>&1 | tee "$LOG_DIR/xcode-selection.log"
+
+      - name: Validate project and scheme
         shell: bash
-        run: bash scripts/build-unsigned-ios-ipa.sh
+        run: |
+          set -Eeuo pipefail
+          set -o pipefail
+
+          {
+            if [[ ! -d "$PROJECT" ]]; then
+              echo "ERROR: Xcode project not found: $PROJECT"
+              exit 1
+            fi
+
+            echo "=== Project contents ==="
+            find "$PROJECT" -maxdepth 4 -type f -print | sort
+
+            echo
+            echo "=== Targets and schemes ==="
+            xcodebuild \
+              -project "$PROJECT" \
+              -list
+
+            echo
+            echo "=== Effective build settings ==="
+            xcodebuild \
+              -project "$PROJECT" \
+              -scheme "$SCHEME" \
+              -configuration "$CONFIGURATION" \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="" \
+              -showBuildSettings
+          } 2>&1 | tee "$LOG_DIR/preflight.log"
+
+          if ! grep -q 'TARGET_NAME = Ayna-iOS' "$LOG_DIR/preflight.log"; then
+            echo "ERROR: The Ayna-iOS target was not found."
+            exit 1
+          fi
+
+      - name: Resolve Swift packages
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          set -o pipefail
+
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -derivedDataPath "$DERIVED_DATA" \
+            2>&1 | tee "$LOG_DIR/package-resolution.log"
+
+      - name: Build unsigned device application
+        id: xcode_build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          set -o pipefail
+
+          rm -rf "$RESULT_BUNDLE"
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RESULT_BUNDLE" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build \
+            2>&1 | tee "$LOG_DIR/xcodebuild.log"
+
+      - name: Extract build error summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          if [[ -f "$LOG_DIR/xcodebuild.log" ]]; then
+            grep \
+              -E \
+              -i \
+              -n \
+              -C 3 \
+              '(^|[[:space:]])(error|fatal error|warning):|BUILD FAILED|BUILD SUCCEEDED|The following build commands failed' \
+              "$LOG_DIR/xcodebuild.log" \
+              > "$LOG_DIR/errors-and-warnings.log" || true
+          else
+            echo "xcodebuild.log was not created." \
+              > "$LOG_DIR/errors-and-warnings.log"
+          fi
+
+          if [[ -d "$RESULT_BUNDLE" ]]; then
+            xcrun xcresulttool get object \
+              --legacy \
+              --path "$RESULT_BUNDLE" \
+              --format json \
+              > "$LOG_DIR/xcresult.json" \
+              2> "$LOG_DIR/xcresult-export-error.log" || true
+          fi
+
+      - name: Locate built application
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          EXPECTED_APP="$DERIVED_DATA/Build/Products/${CONFIGURATION}-iphoneos/Ayna.app"
+
+          if [[ -d "$EXPECTED_APP" ]]; then
+            APP_PATH="$EXPECTED_APP"
+          else
+            APP_PATH="$(
+              find "$DERIVED_DATA/Build/Products" \
+                -type d \
+                -name 'Ayna.app' \
+                -path '*-iphoneos/*' \
+                -print \
+                -quit 2>/dev/null || true
+            )"
+          fi
+
+          if [[ -z "${APP_PATH:-}" || ! -d "$APP_PATH" ]]; then
+            echo "ERROR: Build completed, but Ayna.app was not found."
+            find "$DERIVED_DATA/Build/Products" \
+              -maxdepth 5 \
+              -print 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "Found application: $APP_PATH"
+
+          find "$APP_PATH" \
+            -maxdepth 3 \
+            -print \
+            | sort \
+            > "$LOG_DIR/app-bundle-contents.log"
+
+      - name: Validate application bundle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          INFO_PLIST="$APP_PATH/Info.plist"
+
+          if [[ ! -f "$INFO_PLIST" ]]; then
+            echo "ERROR: Info.plist was not found in Ayna.app."
+            exit 1
+          fi
+
+          EXECUTABLE_NAME="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleExecutable' \
+              "$INFO_PLIST"
+          )"
+
+          if [[ -z "$EXECUTABLE_NAME" ]]; then
+            echo "ERROR: CFBundleExecutable is empty."
+            exit 1
+          fi
+
+          if [[ ! -f "$APP_PATH/$EXECUTABLE_NAME" ]]; then
+            echo "ERROR: Application executable was not found:"
+            echo "$APP_PATH/$EXECUTABLE_NAME"
+            exit 1
+          fi
+
+          {
+            echo "APP_PATH=$APP_PATH"
+            echo "EXECUTABLE_NAME=$EXECUTABLE_NAME"
+
+            echo -n "BUNDLE_IDENTIFIER="
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleIdentifier' \
+              "$INFO_PLIST"
+
+            echo -n "MARKETING_VERSION="
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleShortVersionString' \
+              "$INFO_PLIST"
+
+            echo -n "BUILD_NUMBER="
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleVersion' \
+              "$INFO_PLIST"
+          } | tee "$LOG_DIR/app-metadata.log"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          PACKAGE_DIR="$OUTPUT_DIR/package"
+          IPA_PATH="$OUTPUT_DIR/Ayna-unsigned.ipa"
+
+          rm -rf "$PACKAGE_DIR"
+          rm -f "$IPA_PATH"
+
+          mkdir -p "$PACKAGE_DIR/Payload"
+
+          rm -rf "$APP_PATH/_CodeSignature"
+
+          find "$APP_PATH" \
+            -name 'embedded.mobileprovision' \
+            -delete
+
+          ditto \
+            "$APP_PATH" \
+            "$PACKAGE_DIR/Payload/Ayna.app"
+
+          (
+            cd "$PACKAGE_DIR"
+
+            /usr/bin/ditto \
+              -c \
+              -k \
+              --sequesterRsrc \
+              --keepParent \
+              Payload \
+              "$IPA_PATH"
+          )
+
+          if [[ ! -f "$IPA_PATH" ]]; then
+            echo "ERROR: IPA file was not created."
+            exit 1
+          fi
+
+          unzip -t "$IPA_PATH" \
+            2>&1 | tee "$LOG_DIR/ipa-integrity.log"
+
+          unzip -l "$IPA_PATH" \
+            > "$LOG_DIR/ipa-contents.log"
+
+          shasum -a 256 "$IPA_PATH" \
+            | tee "$OUTPUT_DIR/SHA256SUMS.txt"
+
+          IPA_SIZE="$(stat -f '%z' "$IPA_PATH")"
+
+          {
+            echo "IPA_PATH=$IPA_PATH"
+            echo "IPA_SIZE_BYTES=$IPA_SIZE"
+          } | tee "$LOG_DIR/ipa-metadata.log"
+
+      - name: Collect final diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p "$LOG_DIR"
+
+          {
+            echo "=== Workflow information ==="
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "workflow=$GITHUB_WORKFLOW"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_number=$GITHUB_RUN_NUMBER"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "event=$GITHUB_EVENT_NAME"
+            echo "ref=$GITHUB_REF"
+            echo "sha=$GITHUB_SHA"
+
+            echo
+            echo "=== Build directory tree ==="
+            find "$GITHUB_WORKSPACE/build" \
+              -maxdepth 7 \
+              -print 2>/dev/null \
+              | sort
+
+            echo
+            echo "=== Build directory sizes ==="
+            du -sh "$GITHUB_WORKSPACE/build"/* 2>/dev/null || true
+
+            echo
+            echo "=== Final disk space ==="
+            df -h
+          } > "$LOG_DIR/final-diagnostics.log" 2>&1
 
       - name: Upload unsigned IPA
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Ayna-unsigned-ipa-${{ github.run_number }}
-          path: build-artifacts/ipa
+          name: Ayna-unsigned-IPA-${{ github.run_number }}
+          path: |
+            build/output/Ayna-unsigned.ipa
+            build/output/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
 
-      - name: Upload diagnostics
+      - name: Upload complete build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Ayna-build-diagnostics-${{ github.run_number }}
           path: |
-            workflow-diagnostics
-            build-artifacts/diagnostics
+            build/logs
           if-no-files-found: warn
           retention-days: 14
+          compression-level: 6
