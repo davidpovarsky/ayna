@@ -1,27 +1,72 @@
 name: Build Unsigned iOS IPA
-run-name: Ayna unsigned iOS build - ${{ github.event_name }} - ${{ github.sha }}
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - .github/workflows/build-unsigned-ios-ipa.yml
-      - scripts/build-unsigned-ios-ipa.sh
-      - AynaMobile.xcodeproj/**
-      - Sources/**
-      - Package.swift
-      - Package.resolved
+      - '.github/workflows/build-unsigned-ios-ipa.yml'
+      - 'scripts/build-unsigned-ios-ipa.sh'
+      - 'AynaMobile.xcodeproj/**'
+      - 'Sources/**'
+      - 'Package.swift'
+      - 'Package.resolved'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ayna-unsigned-ios-${{ github.ref }}
+  group: ayna-ios-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate workflow inputs
-    runs-on: ubuntu-l
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CONFIGURATION: Release
+      OUTPUT_ROOT: ${{ github.workspace }}/build-artifacts
+    steps:
+      - name: Create diagnostics directory
+        run: mkdir -p workflow-diagnostics
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Record runner environment
+        shell: bash
+        run: |
+          {
+            date -u
+            uname -a
+            sw_vers
+            xcode-select -p
+            xcodebuild -version
+            xcodebuild -showsdks
+            swift --version
+          } 2>&1 | tee workflow-diagnostics/runner-environment.txt
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: bash scripts/build-unsigned-ios-ipa.sh
+
+      - name: Upload unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ayna-unsigned-ipa-${{ github.run_number }}
+          path: build-artifacts/ipa
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ayna-build-diagnostics-${{ github.run_number }}
+          path: |
+            workflow-diagnostics
+            build-artifacts/diagnostics
+          if-no-files-found: warn
+          retention-days: 14
