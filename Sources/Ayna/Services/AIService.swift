@@ -2079,9 +2079,9 @@ class AIService: ObservableObject {
             temperature: Double?,
             stream: Bool,
             conversationId: UUID?,
-            onChunk: @escaping (String) -> Void,
-            onComplete: @escaping () -> Void,
-            onError: @escaping (Error) -> Void
+            onChunk: @escaping @Sendable (String) -> Void,
+            onComplete: @escaping @Sendable () -> Void,
+            onError: @escaping @Sendable (Error) -> Void
         ) {
             let service = AppleIntelligenceService.shared
 
