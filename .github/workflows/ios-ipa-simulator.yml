@@ -5,6 +5,11 @@ on:
   push:
     branches: [ main ]
     paths:
+      - '**.swift'
+      - 'Package.swift'
+      - 'Sources/**'
+      - 'AynaMobile.xcodeproj/**'
+      - 'AynaUITests.xcodeproj/**'
       - '.github/workflows/ios-ipa-simulator.yml'
 
 permissions:
