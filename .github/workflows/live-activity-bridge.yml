@@ -10,7 +10,6 @@ on:
       - "Release Build"
       - "Test Suite"
     types:
-      - requested
       - in_progress
       - completed
 
